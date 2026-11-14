@@ -8,14 +8,16 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __export = (target, all) => {
-  for (var name in all)
-    __defProp(target, name, { get: all[name], enumerable: true });
+  for (var name in all) __defProp(target, name, { get: all[name], enumerable: true });
 };
 var __copyProps = (to, from, except, desc) => {
-  if (from && typeof from === "object" || typeof from === "function") {
+  if ((from && typeof from === "object") || typeof from === "function") {
     for (let key of __getOwnPropNames(from))
       if (!__hasOwnProp.call(to, key) && key !== except)
-        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+        __defProp(to, key, {
+          get: () => from[key],
+          enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable,
+        });
   }
   return to;
 };
@@ -24,16 +26,112 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // src/main.ts
 var main_exports = {};
 __export(main_exports, {
-  default: () => AlexShermanPlugin
+  default: () => AlexShermanPlugin,
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian3 = require("obsidian");
 
 // src/settings.ts
 var import_obsidian = require("obsidian");
-var DEFAULT_SETTINGS = {
-  paths: {}
+var DEFAULT_THEME = {
+  red: "#d34551",
+  "red-orange": "#f05656",
+  orange: "#f3795e",
+  amber: "#eea15d",
+  yellow: "#f2ce64",
+  lime: "#97e768",
+  mint: "#2dcd80",
+  cyan: "#53cad0",
+  "cool-cyan": "#47bad1",
+  "light-blue": "#52a4da",
+  blue: "#4d7adb",
+  "blue-violet": "#6f51f4",
+  violet: "#9446f8",
+  purple: "#bb59d9",
+  magenta: "#d25191",
+  "hot-red": "#d53f62",
 };
+var DEFAULT_SETTINGS = {
+  theme: Object.assign({}, DEFAULT_THEME),
+  paths: {},
+};
+
+function normalizeThemeName(name) {
+  let trimmed = (name || "").trim();
+  if (!trimmed) return "";
+  const varMatch = trimmed.match(/^var\(\s*([^)\s]+)\s*\)$/);
+  if (varMatch) {
+    trimmed = varMatch[1];
+  }
+  return trimmed.replace(/^--+/, "");
+}
+
+function toCssVarName(name) {
+  const clean = normalizeThemeName(name);
+  return clean ? `--${clean}` : "";
+}
+
+function toCssVarRef(name) {
+  const cssVar = toCssVarName(name);
+  return cssVar ? `var(${cssVar})` : "";
+}
+
+function isValidHexColor(value) {
+  return /^#[0-9a-fA-F]{6}$/.test((value || "").trim());
+}
+
+function resolveColorValue(colorExpr, theme) {
+  if (!colorExpr) return "transparent";
+  const match = colorExpr.trim().match(/^var\(\s*([^)\s]+)\s*\)$/);
+  if (match && theme) {
+    const clean = normalizeThemeName(match[1]);
+    if (theme[clean]) return theme[clean];
+    if (theme[`--${clean}`]) return theme[`--${clean}`];
+  }
+  return colorExpr;
+}
+
+function sortPathsHierarchically(pathsObj) {
+  return Object.keys(pathsObj).sort((a, b) => {
+    const aParts = a.split("/").filter(Boolean);
+    const bParts = b.split("/").filter(Boolean);
+    const minLen = Math.min(aParts.length, bParts.length);
+    for (let i = 0; i < minLen; i++) {
+      const cmp = aParts[i].localeCompare(bParts[i], void 0, { sensitivity: "base" });
+      if (cmp !== 0) return cmp;
+    }
+    return aParts.length - bParts.length;
+  });
+}
+
+function createColorSwatch(parentEl, initialColor) {
+  const swatch = parentEl.createEl("span");
+  swatch.style.display = "inline-block";
+  swatch.style.width = "14px";
+  swatch.style.height = "14px";
+  swatch.style.borderRadius = "50%";
+  swatch.style.border = "1px solid var(--background-modifier-border)";
+  swatch.style.backgroundColor = initialColor || "transparent";
+  swatch.style.flexShrink = "0";
+  return swatch;
+}
+
+function populateColorDropdown(dropdown, themeKeys, currentValue, noneLabel) {
+  dropdown.addOption("", noneLabel);
+  let foundCurrent = currentValue === "" || currentValue == null;
+  for (const varName of themeKeys) {
+    const optionVal = toCssVarRef(varName);
+    dropdown.addOption(optionVal, normalizeThemeName(varName));
+    if (optionVal === currentValue) {
+      foundCurrent = true;
+    }
+  }
+  if (!foundCurrent && currentValue) {
+    dropdown.addOption(currentValue, `${currentValue} (custom)`);
+  }
+  dropdown.setValue(currentValue || "");
+}
+
 var SampleSettingTab = class extends import_obsidian.PluginSettingTab {
   constructor(plugin) {
     super(plugin.app, plugin);
@@ -42,40 +140,330 @@ var SampleSettingTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    for (const key in this.plugin.settings.paths) {
-      let value = this.plugin.settings.paths[key];
-      new import_obsidian.Setting(containerEl).setName(key).setDesc("Edit the color for this path.").addText(
-        (text) => text.setPlaceholder("Enter value").setValue(value).onChange(async (newValue) => {
-          this.plugin.settings.paths[key] = newValue;
+
+    const pathSwatches = [];
+    const updateAllSwatches = () => {
+      for (const item of pathSwatches) {
+        item.swatch.style.backgroundColor = resolveColorValue(
+          item.getValue(),
+          this.plugin.settings.theme,
+        );
+      }
+    };
+
+    // ==================== THEME SECTION ====================
+    new import_obsidian.Setting(containerEl)
+      .setName("Theme")
+      .setDesc(
+        "Define CSS color variables available across your vault and in the path color dropdowns below.",
+      )
+      .setHeading();
+
+    const themeEntries = Object.entries(this.plugin.settings.theme || {});
+    for (const [varName, colorValue] of themeEntries) {
+      const setting = new import_obsidian.Setting(containerEl);
+      setting.infoEl.empty();
+      setting.infoEl.style.display = "flex";
+      setting.infoEl.style.alignItems = "center";
+      setting.infoEl.style.gap = "8px";
+      setting.infoEl.style.flex = "1";
+      setting.infoEl.style.marginRight = "12px";
+
+      const nameInput = setting.infoEl.createEl("input", {
+        type: "text",
+        value: normalizeThemeName(varName),
+        placeholder: "color-name",
+      });
+      nameInput.style.width = "100%";
+      nameInput.style.fontFamily = "var(--font-monospace)";
+
+      const commitVarRename = async () => {
+        const newVarName = normalizeThemeName(nameInput.value);
+        if (!newVarName) {
+          nameInput.value = normalizeThemeName(varName);
+          return;
+        }
+        if (newVarName === varName) {
+          nameInput.value = newVarName;
+          return;
+        }
+        const rebuiltTheme = {};
+        for (const [k, v] of Object.entries(this.plugin.settings.theme)) {
+          if (k === varName) {
+            rebuiltTheme[newVarName] = v;
+          } else {
+            rebuiltTheme[k] = v;
+          }
+        }
+        this.plugin.settings.theme = rebuiltTheme;
+
+        const oldRef = toCssVarRef(varName);
+        const newRef = toCssVarRef(newVarName);
+        for (const [pKey, pVal] of Object.entries(this.plugin.settings.paths)) {
+          if (pVal === oldRef) {
+            this.plugin.settings.paths[pKey] = newRef;
+          }
+        }
+        await this.plugin.saveSettings();
+        this.plugin.applyStyles();
+        this.display();
+      };
+
+      nameInput.addEventListener("blur", commitVarRename);
+      nameInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          nameInput.blur();
+        }
+      });
+
+      let textComponentRef = null;
+      let colorPickerRef = null;
+
+      setting.addColorPicker((picker) => {
+        colorPickerRef = picker;
+        picker.setValue(isValidHexColor(colorValue) ? colorValue.trim() : "#000000");
+        picker.onChange(async (newHex) => {
+          this.plugin.settings.theme[varName] = newHex;
+          if (textComponentRef) {
+            textComponentRef.setValue(newHex);
+          }
           await this.plugin.saveSettings();
-        })
-      ).addButton(
-        (b) => b.setIcon("trash").onClick(async () => {
-          delete this.plugin.settings.paths[key];
-          await this.plugin.saveSettings();
-          this.display();
-        })
+          this.plugin.applyStyles();
+          updateAllSwatches();
+        });
+      });
+
+      setting.addText((text) => {
+        textComponentRef = text;
+        text
+          .setPlaceholder("#rrggbb or CSS color")
+          .setValue(colorValue)
+          .onChange(async (newValue) => {
+            const trimmed = newValue.trim();
+            this.plugin.settings.theme[varName] = trimmed;
+            if (colorPickerRef && isValidHexColor(trimmed)) {
+              colorPickerRef.setValue(trimmed);
+            }
+            await this.plugin.saveSettings();
+            this.plugin.applyStyles();
+            updateAllSwatches();
+          });
+        text.inputEl.style.width = "130px";
+        text.inputEl.style.fontFamily = "var(--font-monospace)";
+      });
+
+      setting.addButton((b) =>
+        b
+          .setIcon("trash")
+          .setTooltip("Delete theme variable")
+          .onClick(async () => {
+            delete this.plugin.settings.theme[varName];
+            await this.plugin.saveSettings();
+            this.plugin.applyStyles();
+            this.display();
+          }),
       );
     }
-    let keyInput = "";
-    new import_obsidian.Setting(containerEl).setName("Add New Path").addText(
-      (text) => text.setPlaceholder("Path name").onChange((value) => {
-        keyInput = value;
+
+    let newVarNameInput = "";
+    let newVarColorInput = "#40c4ff";
+    let addVarTextRef = null;
+    let addVarPickerRef = null;
+
+    new import_obsidian.Setting(containerEl)
+      .setName("Add Theme Color")
+      .addText((text) => {
+        text.setPlaceholder("color-name").onChange((val) => {
+          newVarNameInput = val;
+        });
+        text.inputEl.style.fontFamily = "var(--font-monospace)";
       })
-    ).addButton(
-      (b) => b.setIcon("plus").onClick(async () => {
-        const newKey = keyInput.trim();
-        if (newKey) {
-          this.plugin.settings.paths[newKey] = "";
-          await this.plugin.saveSettings();
-          this.display();
+      .addColorPicker((picker) => {
+        addVarPickerRef = picker;
+        picker.setValue(newVarColorInput).onChange((hex) => {
+          newVarColorInput = hex;
+          if (addVarTextRef) {
+            addVarTextRef.setValue(hex);
+          }
+        });
+      })
+      .addText((text) => {
+        addVarTextRef = text;
+        text
+          .setPlaceholder("#rrggbb or CSS color")
+          .setValue(newVarColorInput)
+          .onChange((val) => {
+            newVarColorInput = val.trim();
+            if (addVarPickerRef && isValidHexColor(newVarColorInput)) {
+              addVarPickerRef.setValue(newVarColorInput);
+            }
+          });
+        text.inputEl.style.width = "130px";
+        text.inputEl.style.fontFamily = "var(--font-monospace)";
+      })
+      .addButton((b) =>
+        b
+          .setIcon("plus")
+          .setTooltip("Add theme variable")
+          .onClick(async () => {
+            const normalized = normalizeThemeName(newVarNameInput);
+            if (normalized) {
+              this.plugin.settings.theme[normalized] = newVarColorInput || "#000000";
+              await this.plugin.saveSettings();
+              this.plugin.applyStyles();
+              this.display();
+            }
+          }),
+      );
+
+    // ==================== PATHS SECTION ====================
+    new import_obsidian.Setting(containerEl)
+      .setName("Paths")
+      .setDesc(
+        "Assign theme colors to files and folders. Items are grouped and indented by folder hierarchy.",
+      )
+      .setHeading();
+
+    const sortedPaths = sortPathsHierarchically(this.plugin.settings.paths);
+    const themeKeys = Object.keys(this.plugin.settings.theme || {});
+
+    const populateDropdownOptions = (dropdown, currentValue) => {
+      populateColorDropdown(dropdown, themeKeys, currentValue, "-- None --");
+    };
+
+    for (const key of sortedPaths) {
+      let currentValue = this.plugin.settings.paths[key] || "";
+      const segments = key.split("/").filter(Boolean);
+      const depth = Math.max(0, segments.length - 1);
+
+      const setting = new import_obsidian.Setting(containerEl);
+      if (depth > 0) {
+        setting.settingEl.style.marginLeft = `${depth * 24}px`;
+        setting.settingEl.style.paddingLeft = "12px";
+        setting.settingEl.style.borderLeft = "2px solid var(--background-modifier-border)";
+      }
+
+      setting.infoEl.empty();
+      setting.infoEl.style.display = "flex";
+      setting.infoEl.style.alignItems = "center";
+      setting.infoEl.style.gap = "8px";
+      setting.infoEl.style.flex = "1";
+      setting.infoEl.style.marginRight = "12px";
+
+      const pathInput = setting.infoEl.createEl("input", {
+        type: "text",
+        value: key,
+        placeholder: "Folder/Subfolder or File.md",
+      });
+      pathInput.style.width = "100%";
+
+      const commitPathRename = async () => {
+        const newKey = pathInput.value.trim().replace(/^\/+|\/+$/g, "");
+        if (!newKey) {
+          pathInput.value = key;
+          return;
         }
-      })
-    );
-    new import_obsidian.Setting(containerEl).setName("Refresh").addButton(
-      (b) => b.setIcon("reset").onClick(async () => {
+        if (newKey === key) {
+          pathInput.value = key;
+          return;
+        }
+        const colorVal = this.plugin.settings.paths[key];
+        delete this.plugin.settings.paths[key];
+        this.plugin.settings.paths[newKey] = colorVal;
+        await this.plugin.saveSettings();
         this.plugin.applyStyles();
-      })
+        this.display();
+      };
+
+      pathInput.addEventListener("blur", commitPathRename);
+      pathInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          pathInput.blur();
+        }
+      });
+
+      const swatch = createColorSwatch(
+        setting.controlEl,
+        resolveColorValue(currentValue, this.plugin.settings.theme),
+      );
+      pathSwatches.push({
+        swatch,
+        getValue: () => currentValue,
+      });
+
+      setting.addDropdown((dropdown) => {
+        populateDropdownOptions(dropdown, currentValue);
+        dropdown.onChange(async (newValue) => {
+          currentValue = newValue;
+          this.plugin.settings.paths[key] = newValue;
+          swatch.style.backgroundColor = resolveColorValue(newValue, this.plugin.settings.theme);
+          await this.plugin.saveSettings();
+          this.plugin.applyStyles();
+        });
+      });
+
+      setting.addButton((b) =>
+        b
+          .setIcon("trash")
+          .setTooltip("Remove path")
+          .onClick(async () => {
+            delete this.plugin.settings.paths[key];
+            await this.plugin.saveSettings();
+            this.plugin.applyStyles();
+            this.display();
+          }),
+      );
+    }
+
+    let newPathInput = "";
+    const defaultNewPathColor = themeKeys.length > 0 ? toCssVarRef(themeKeys[0]) : "";
+    let newPathColor = defaultNewPathColor;
+
+    const addPathSetting = new import_obsidian.Setting(containerEl).setName("Add New Path");
+    addPathSetting.addText((text) => {
+      text.setPlaceholder("Path (e.g. Folder/File.md)").onChange((value) => {
+        newPathInput = value;
+      });
+    });
+
+    const newPathSwatch = createColorSwatch(
+      addPathSetting.controlEl,
+      resolveColorValue(newPathColor, this.plugin.settings.theme),
+    );
+    pathSwatches.push({
+      swatch: newPathSwatch,
+      getValue: () => newPathColor,
+    });
+
+    addPathSetting.addDropdown((dropdown) => {
+      populateDropdownOptions(dropdown, newPathColor);
+      dropdown.onChange((val) => {
+        newPathColor = val;
+        newPathSwatch.style.backgroundColor = resolveColorValue(val, this.plugin.settings.theme);
+      });
+    });
+
+    addPathSetting.addButton((b) =>
+      b
+        .setIcon("plus")
+        .setTooltip("Add path")
+        .onClick(async () => {
+          const newKey = newPathInput.trim().replace(/^\/+|\/+$/g, "");
+          if (newKey) {
+            this.plugin.settings.paths[newKey] = newPathColor;
+            await this.plugin.saveSettings();
+            this.plugin.applyStyles();
+            this.display();
+          }
+        }),
+    );
+
+    new import_obsidian.Setting(containerEl).setName("Refresh").addButton((b) =>
+      b.setIcon("reset").onClick(async () => {
+        this.plugin.applyStyles();
+      }),
     );
   }
 };
@@ -92,32 +480,46 @@ var SampleModal = class extends import_obsidian2.Modal {
     const { contentEl } = this;
     contentEl.createEl("h2", { text: `Set color for ${this.path}` });
     const form = contentEl.createEl("form");
-    const inputContainer = form.createEl("div");
-    inputContainer.createEl("label", { text: "Enter text:" });
-    const input = inputContainer.createEl("input", {
-      type: "text",
-      placeholder: "Color (e.g., #ff0000 or red, or var(--mint))"
+    const currentValue = this.plugin.settings.paths[this.path] || "";
+    let selectedValue = currentValue;
+
+    const setting = new import_obsidian2.Setting(form).setName("Theme color");
+    const swatch = createColorSwatch(
+      setting.controlEl,
+      resolveColorValue(selectedValue, this.plugin.settings.theme),
+    );
+
+    const themeKeys = Object.keys(this.plugin.settings.theme || {});
+    let selectEl = null;
+    setting.addDropdown((dropdown) => {
+      selectEl = dropdown.selectEl;
+      populateColorDropdown(dropdown, themeKeys, selectedValue, "-- None (remove color) --");
+      dropdown.onChange((val) => {
+        selectedValue = val;
+        swatch.style.backgroundColor = resolveColorValue(val, this.plugin.settings.theme);
+      });
     });
+
     const buttonContainer = form.createEl("div", {
-      cls: "modal-button-container"
+      cls: "modal-button-container",
     });
     buttonContainer.style.marginTop = "20px";
     buttonContainer.style.display = "flex";
     buttonContainer.style.gap = "10px";
     buttonContainer.style.justifyContent = "flex-end";
-    let submit = (e) => {
+    let submit = async (e) => {
       e.preventDefault();
-      if (input.value.trim() === "") {
+      if (selectedValue.trim() === "") {
         delete this.plugin.settings.paths[this.path];
       } else {
-        this.plugin.settings.paths[this.path] = input.value;
+        this.plugin.settings.paths[this.path] = selectedValue;
       }
-      this.plugin.saveSettings();
+      await this.plugin.saveSettings();
       this.plugin.applyStyles();
       this.close();
     };
     form.addEventListener("submit", submit);
-    const submitBtn = buttonContainer.createEl("button", { text: "Submit" });
+    const submitBtn = buttonContainer.createEl("button", { text: "Submit", cls: "mod-cta" });
     submitBtn.type = "button";
     submitBtn.addEventListener("click", submit);
     const cancelBtn = buttonContainer.createEl("button", { text: "Cancel" });
@@ -125,7 +527,9 @@ var SampleModal = class extends import_obsidian2.Modal {
     cancelBtn.addEventListener("click", () => {
       this.close();
     });
-    input.focus();
+    if (selectEl) {
+      selectEl.focus();
+    }
   }
   onClose() {
     const { contentEl } = this;
@@ -174,12 +578,23 @@ var AlexShermanPlugin = class extends import_obsidian3.Plugin {
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
         menu.addItem((item) => {
-          item.setTitle("Set color").setIcon("palette").onClick(async () => {
-            const modal = new SampleModal(this, file.path);
-            modal.open();
-          });
+          item
+            .setTitle("Set color")
+            .setIcon("palette")
+            .onClick(async () => {
+              const modal = new SampleModal(this, file.path);
+              modal.open();
+            });
         });
-      })
+      }),
+    );
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", (leaf) => {
+        var _a;
+        if ((leaf == null ? void 0 : leaf.view) instanceof import_obsidian3.FileView) {
+          leaf.view.contentEl.dataset.path = (_a = leaf.view.file) == null ? void 0 : _a.path;
+        }
+      }),
     );
   }
   onExternalSettingsChange() {
@@ -194,27 +609,49 @@ var AlexShermanPlugin = class extends import_obsidian3.Plugin {
     const style = document.createElement("style");
     (_a = document.getElementById("custom-color")) == null ? void 0 : _a.remove();
     style.id = "custom-color";
-    for (const [path, color] of Object.entries(this.settings.paths).sort(
-      (a, b) => a[0].length - b[0].length
-    )) {
-      style.innerHTML += template.replace(/\#\{\$color\}/g, color).replace(/\#{\$path\}/g, path);
+    let css = "";
+    const themeEntries = Object.entries(this.settings.theme || {});
+    if (themeEntries.length > 0) {
+      const vars = themeEntries
+        .filter(([k, v]) => normalizeThemeName(k) && v)
+        .map(([k, v]) => `  ${toCssVarName(k)}: ${v};`)
+        .join("\n");
+      css += `:root, body {\n${vars}\n}\n`;
     }
+    for (const [path, color] of Object.entries(this.settings.paths || {}).sort(
+      (a, b) => a[0].length - b[0].length,
+    )) {
+      if (!color) continue;
+      css += template.replace(/\#\{\$color\}/g, color).replace(/\#{\$path\}/g, path);
+    }
+    style.innerHTML = css;
     document.body.appendChild(style);
-    this.registerEvent(
-      this.app.workspace.on("active-leaf-change", (leaf) => {
-        var _a2;
-        if ((leaf == null ? void 0 : leaf.view) instanceof import_obsidian3.FileView) {
-          leaf.view.contentEl.dataset.path = (_a2 = leaf.view.file) == null ? void 0 : _a2.path;
-        }
-      })
-    );
   }
   async loadSettings() {
     let partial = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, partial);
+    const loadedTheme = (partial == null ? void 0 : partial.theme) || {};
+    const normalizedTheme = {};
+    const sourceTheme = Object.keys(loadedTheme).length > 0 ? loadedTheme : DEFAULT_THEME;
+    for (const [k, v] of Object.entries(sourceTheme)) {
+      const clean = normalizeThemeName(k);
+      if (clean) {
+        normalizedTheme[clean] = v;
+      }
+    }
+    this.settings.theme = normalizedTheme;
+    this.settings.paths = Object.assign({}, (partial == null ? void 0 : partial.paths) || {});
+    for (const colorVal of Object.values(this.settings.paths)) {
+      const match = (colorVal || "").trim().match(/^var\(\s*([^)\s]+)\s*\)$/);
+      if (match) {
+        const cleanName = normalizeThemeName(match[1]);
+        if (cleanName && !(cleanName in this.settings.theme)) {
+          this.settings.theme[cleanName] = DEFAULT_THEME[cleanName] || "#888888";
+        }
+      }
+    }
   }
   async saveSettings() {
     await this.saveData(this.settings);
   }
 };
-//# sourceMappingURL=data:application/json;base64,ewogICJ2ZXJzaW9uIjogMywKICAic291cmNlcyI6IFsic3JjL21haW4udHMiLCAic3JjL3NldHRpbmdzLnRzIiwgInNyYy9tb2RhbC50cyJdLAogICJzb3VyY2VzQ29udGVudCI6IFsiaW1wb3J0IHsgRmlsZVZpZXcsIE5vdGljZSwgUGx1Z2luIH0gZnJvbSBcIm9ic2lkaWFuXCI7XG5pbXBvcnQgeyBERUZBVUxUX1NFVFRJTkdTLCBNeVBsdWdpblNldHRpbmdzLCBTYW1wbGVTZXR0aW5nVGFiIH0gZnJvbSBcInNldHRpbmdzXCI7XG5pbXBvcnQgeyBTYW1wbGVNb2RhbCB9IGZyb20gXCJtb2RhbFwiO1xuXG5jb25zdCB0ZW1wbGF0ZSA9IGBcbi50cmVlLWl0ZW0tc2VsZltkYXRhLXBhdGhePVwiI3skcGF0aH1cIl0ge1xuICBjb2xvcjogI3skY29sb3J9O1xuICAtLW5hdi1pdGVtLWNvbG9yLWhvdmVyOiBjb2xvci1taXgoXG4gICAgaW4gc3JnYixcbiAgICAjeyRjb2xvcn0gdmFyKC0tZmctY29udHJhc3QtYW1vdW50KSxcbiAgICB2YXIoLS1jb250cmFzdC1jb2xvcilcbiAgKTtcbiAgLS1uYXYtaXRlbS1iYWNrZ3JvdW5kLWhvdmVyOiBjb2xvci1taXgoXG4gICAgaW4gc3JnYixcbiAgICAjeyRjb2xvcn0gdmFyKC0tYmctY29udHJhc3QtYW1vdW50KSxcbiAgICB0cmFuc3BhcmVudFxuICApO1xuICAtLWJhY2tncm91bmQtbW9kaWZpZXItYm9yZGVyLWZvY3VzOiAjeyRjb2xvcn07XG4gIC0tbmF2LWNvbGxhcHNlLWljb24tY29sb3I6IGNvbG9yLW1peChpbiBzcmdiLCAjeyRjb2xvcn0gNjAlLCB0cmFuc3BhcmVudCk7XG4gICY6aG92ZXIge1xuICAgIC0tbmF2LWNvbGxhcHNlLWljb24tY29sb3I6IGNvbG9yLW1peChpbiBzcmdiLCAjeyRjb2xvcn0gNjAlLCB2YXIoLS1jb250cmFzdC1jb2xvcikpO1xuICB9XG4gIC5uYXYtZmlsZS10YWcge1xuICAgIGNvbG9yOiBjb2xvci1taXgoaW4gc3JnYiwgI3skY29sb3J9IDcwJSwgdHJhbnNwYXJlbnQpO1xuICB9XG59XG4udmlldy1jb250ZW50W2RhdGEtcGF0aF49XCIjeyRwYXRofVwiXSB7XG4gIC0taDEtY29sb3I6ICN7JGNvbG9yfTtcbiAgLS1oMi1jb2xvcjogI3skY29sb3J9O1xuICAtLWgzLWNvbG9yOiAjeyRjb2xvcn07XG4gIC0taDQtY29sb3I6ICN7JGNvbG9yfTtcbiAgLS1oNS1jb2xvcjogI3skY29sb3J9O1xuICAtLWg2LWNvbG9yOiAjeyRjb2xvcn07XG4gIC0taW5saW5lLXRpdGxlLWNvbG9yOiAjeyRjb2xvcn07XG59XG5gO1xuXG5leHBvcnQgZGVmYXVsdCBjbGFzcyBBbGV4U2hlcm1hblBsdWdpbiBleHRlbmRzIFBsdWdpbiB7XG4gIHNldHRpbmdzOiBNeVBsdWdpblNldHRpbmdzO1xuICBhc3luYyBvbmxvYWQoKSB7XG4gICAgYXdhaXQgdGhpcy5sb2FkU2V0dGluZ3MoKTtcbiAgICB0aGlzLmFkZFNldHRpbmdUYWIobmV3IFNhbXBsZVNldHRpbmdUYWIodGhpcykpO1xuICAgIHRoaXMuYXBwbHlTdHlsZXMoKTtcblxuICAgIHRoaXMucmVnaXN0ZXJFdmVudChcbiAgICAgIHRoaXMuYXBwLndvcmtzcGFjZS5vbihcImZpbGUtbWVudVwiLCAobWVudSwgZmlsZSkgPT4ge1xuICAgICAgICAvLyBBZGQgYSBuZXcgaXRlbSB0byB0aGUgbWVudVxuICAgICAgICBtZW51LmFkZEl0ZW0oKGl0ZW0pID0+IHtcbiAgICAgICAgICBpdGVtXG4gICAgICAgICAgICAuc2V0VGl0bGUoXCJTZXQgY29sb3JcIikgLy8gU2V0IHRoZSB0ZXh0IG9mIHRoZSBtZW51IGl0ZW1cbiAgICAgICAgICAgIC5zZXRJY29uKFwicGFsZXR0ZVwiKSAvLyBTZXQgYW4gaWNvbiAodXNlcyBMdWNpZGUgaWNvbnMpXG4gICAgICAgICAgICAub25DbGljayhhc3luYyAoKSA9PiB7XG4gICAgICAgICAgICAgIGNvbnN0IG1vZGFsID0gbmV3IFNhbXBsZU1vZGFsKHRoaXMsIGZpbGUucGF0aCk7XG4gICAgICAgICAgICAgIG1vZGFsLm9wZW4oKTtcbiAgICAgICAgICAgIH0pO1xuICAgICAgICB9KTtcbiAgICAgIH0pLFxuICAgICk7XG4gIH1cbiAgb25FeHRlcm5hbFNldHRpbmdzQ2hhbmdlKCkge1xuICAgIHRoaXMubG9hZFNldHRpbmdzKCkudGhlbigoKSA9PiB0aGlzLmFwcGx5U3R5bGVzKCkpO1xuICB9XG4gIG9udW5sb2FkKCkge1xuICAgIGRvY3VtZW50LmdldEVsZW1lbnRCeUlkKFwiY3VzdG9tLWNvbG9yXCIpPy5yZW1vdmUoKTtcbiAgfVxuXG4gIGFwcGx5U3R5bGVzKCkge1xuICAgIGNvbnN0IHN0eWxlID0gZG9jdW1lbnQuY3JlYXRlRWxlbWVudChcInN0eWxlXCIpO1xuICAgIGRvY3VtZW50LmdldEVsZW1lbnRCeUlkKFwiY3VzdG9tLWNvbG9yXCIpPy5yZW1vdmUoKTtcbiAgICBzdHlsZS5pZCA9IFwiY3VzdG9tLWNvbG9yXCI7XG5cbiAgICBmb3IgKGNvbnN0IFtwYXRoLCBjb2xvcl0gb2YgT2JqZWN0LmVudHJpZXModGhpcy5zZXR0aW5ncy5wYXRocykuc29ydChcbiAgICAgIChhLCBiKSA9PiBhWzBdLmxlbmd0aCAtIGJbMF0ubGVuZ3RoLFxuICAgICkpIHtcbiAgICAgIHN0eWxlLmlubmVySFRNTCArPSB0ZW1wbGF0ZVxuICAgICAgICAucmVwbGFjZSgvXFwjXFx7XFwkY29sb3JcXH0vZywgY29sb3IpXG4gICAgICAgIC5yZXBsYWNlKC9cXCN7XFwkcGF0aFxcfS9nLCBwYXRoKTtcbiAgICB9XG4gICAgZG9jdW1lbnQuYm9keS5hcHBlbmRDaGlsZChzdHlsZSk7XG4gICAgdGhpcy5yZWdpc3RlckV2ZW50KFxuICAgICAgdGhpcy5hcHAud29ya3NwYWNlLm9uKFwiYWN0aXZlLWxlYWYtY2hhbmdlXCIsIChsZWFmKSA9PiB7XG4gICAgICAgIGlmIChsZWFmPy52aWV3IGluc3RhbmNlb2YgRmlsZVZpZXcpIHtcbiAgICAgICAgICBsZWFmLnZpZXcuY29udGVudEVsLmRhdGFzZXQucGF0aCA9IGxlYWYudmlldy5maWxlPy5wYXRoO1xuICAgICAgICB9XG4gICAgICB9KSxcbiAgICApO1xuICB9XG5cbiAgYXN5bmMgbG9hZFNldHRpbmdzKCkge1xuICAgIGxldCBwYXJ0aWFsID0gKGF3YWl0IHRoaXMubG9hZERhdGEoKSkgYXMgUGFydGlhbDxNeVBsdWdpblNldHRpbmdzPjtcbiAgICB0aGlzLnNldHRpbmdzID0gT2JqZWN0LmFzc2lnbih7fSwgREVGQVVMVF9TRVRUSU5HUywgcGFydGlhbCk7XG4gICAgLy8gdGhpcy5zZXR0aW5ncyA9IERFRkFVTFRfU0VUVElOR1M7XG4gIH1cblxuICBhc3luYyBzYXZlU2V0dGluZ3MoKSB7XG4gICAgYXdhaXQgdGhpcy5zYXZlRGF0YSh0aGlzLnNldHRpbmdzKTtcbiAgfVxufVxuIiwgImltcG9ydCB7ICBQbHVnaW5TZXR0aW5nVGFiLCBTZXR0aW5nIH0gZnJvbSBcIm9ic2lkaWFuXCI7XG5pbXBvcnQgQWxleFNoZXJtYW5QbHVnaW4gZnJvbSBcIi4vbWFpblwiO1xuXG5leHBvcnQgaW50ZXJmYWNlIE15UGx1Z2luU2V0dGluZ3Mge1xuICBwYXRoczogeyBba2V5OiBzdHJpbmddOiBzdHJpbmcgfTtcbn1cblxuZXhwb3J0IGNvbnN0IERFRkFVTFRfU0VUVElOR1M6IE15UGx1Z2luU2V0dGluZ3MgPSB7XG4gIHBhdGhzOiB7fSxcbn07XG5cbmV4cG9ydCBjbGFzcyBTYW1wbGVTZXR0aW5nVGFiIGV4dGVuZHMgUGx1Z2luU2V0dGluZ1RhYiB7XG4gIHBsdWdpbjogQWxleFNoZXJtYW5QbHVnaW47XG5cbiAgY29uc3RydWN0b3IocGx1Z2luOiBBbGV4U2hlcm1hblBsdWdpbikge1xuICAgIHN1cGVyKHBsdWdpbi5hcHAsIHBsdWdpbik7XG4gICAgdGhpcy5wbHVnaW4gPSBwbHVnaW47XG4gIH1cblxuICBkaXNwbGF5KCk6IHZvaWQge1xuICAgIGNvbnN0IHsgY29udGFpbmVyRWwgfSA9IHRoaXM7XG4gICAgY29udGFpbmVyRWwuZW1wdHkoKTtcbiAgICAvLyBEaXNwbGF5IGVhY2ggc2V0dGluZyBlbnRyeVxuICAgIGZvciAoY29uc3Qga2V5IGluIHRoaXMucGx1Z2luLnNldHRpbmdzLnBhdGhzKSB7XG4gICAgICBsZXQgdmFsdWUgPSB0aGlzLnBsdWdpbi5zZXR0aW5ncy5wYXRoc1trZXldIGFzIHN0cmluZztcbiAgICAgIG5ldyBTZXR0aW5nKGNvbnRhaW5lckVsKVxuICAgICAgICAuc2V0TmFtZShrZXkpXG4gICAgICAgIC5zZXREZXNjKFwiRWRpdCB0aGUgY29sb3IgZm9yIHRoaXMgcGF0aC5cIilcbiAgICAgICAgLmFkZFRleHQoKHRleHQpID0+XG4gICAgICAgICAgdGV4dFxuICAgICAgICAgICAgLnNldFBsYWNlaG9sZGVyKFwiRW50ZXIgdmFsdWVcIilcbiAgICAgICAgICAgIC5zZXRWYWx1ZSh2YWx1ZSlcbiAgICAgICAgICAgIC5vbkNoYW5nZShhc3luYyAobmV3VmFsdWUpID0+IHtcbiAgICAgICAgICAgICAgdGhpcy5wbHVnaW4uc2V0dGluZ3MucGF0aHNba2V5XSA9IG5ld1ZhbHVlO1xuICAgICAgICAgICAgICBhd2FpdCB0aGlzLnBsdWdpbi5zYXZlU2V0dGluZ3MoKTtcbiAgICAgICAgICAgIH0pLFxuICAgICAgICApXG4gICAgICAgIC5hZGRCdXR0b24oKGIpID0+XG4gICAgICAgICAgYi5zZXRJY29uKFwidHJhc2hcIikub25DbGljayhhc3luYyAoKSA9PiB7XG4gICAgICAgICAgICBkZWxldGUgdGhpcy5wbHVnaW4uc2V0dGluZ3MucGF0aHNba2V5XTtcbiAgICAgICAgICAgIGF3YWl0IHRoaXMucGx1Z2luLnNhdmVTZXR0aW5ncygpO1xuICAgICAgICAgICAgdGhpcy5kaXNwbGF5KCk7XG4gICAgICAgICAgfSksXG4gICAgICAgICk7XG4gICAgfVxuXG4gICAgLy8gQWRkIG5ldyBlbnRyeSBidXR0b25cbiAgICBsZXQga2V5SW5wdXQgPSBcIlwiO1xuICAgIG5ldyBTZXR0aW5nKGNvbnRhaW5lckVsKVxuICAgICAgLnNldE5hbWUoXCJBZGQgTmV3IFBhdGhcIilcbiAgICAgIC5hZGRUZXh0KCh0ZXh0KSA9PlxuICAgICAgICB0ZXh0LnNldFBsYWNlaG9sZGVyKFwiUGF0aCBuYW1lXCIpLm9uQ2hhbmdlKCh2YWx1ZSkgPT4ge1xuICAgICAgICAgIGtleUlucHV0ID0gdmFsdWU7XG4gICAgICAgIH0pLFxuICAgICAgKVxuICAgICAgLmFkZEJ1dHRvbigoYikgPT5cbiAgICAgICAgYi5zZXRJY29uKFwicGx1c1wiKS5vbkNsaWNrKGFzeW5jICgpID0+IHtcbiAgICAgICAgICBjb25zdCBuZXdLZXkgPSBrZXlJbnB1dC50cmltKCk7XG4gICAgICAgICAgaWYgKG5ld0tleSkge1xuICAgICAgICAgICAgdGhpcy5wbHVnaW4uc2V0dGluZ3MucGF0aHNbbmV3S2V5XSA9IFwiXCI7XG4gICAgICAgICAgICBhd2FpdCB0aGlzLnBsdWdpbi5zYXZlU2V0dGluZ3MoKTtcbiAgICAgICAgICAgIHRoaXMuZGlzcGxheSgpO1xuICAgICAgICAgIH1cbiAgICAgICAgfSksXG4gICAgICApO1xuICAgIG5ldyBTZXR0aW5nKGNvbnRhaW5lckVsKS5zZXROYW1lKFwiUmVmcmVzaFwiKS5hZGRCdXR0b24oKGIpID0+XG4gICAgICBiLnNldEljb24oXCJyZXNldFwiKS5vbkNsaWNrKGFzeW5jICgpID0+IHtcbiAgICAgICAgdGhpcy5wbHVnaW4uYXBwbHlTdHlsZXMoKTtcbiAgICAgIH0pLFxuICAgICk7XG4gIH1cbn1cbiIsICJpbXBvcnQgQWxleFNoZXJtYW5QbHVnaW4gZnJvbSBcIm1haW5cIjtcbmltcG9ydCB7IEFwcCwgTW9kYWwgfSBmcm9tIFwib2JzaWRpYW5cIjtcblxuZXhwb3J0IGNsYXNzIFNhbXBsZU1vZGFsIGV4dGVuZHMgTW9kYWwge1xuICBwYXRoOiBzdHJpbmc7XG4gIHBsdWdpbjogQWxleFNoZXJtYW5QbHVnaW47XG5cbiAgY29uc3RydWN0b3IocGx1Z2luOiBBbGV4U2hlcm1hblBsdWdpbiwgcGF0aDogc3RyaW5nKSB7XG4gICAgc3VwZXIocGx1Z2luLmFwcCk7XG4gICAgdGhpcy5wYXRoID0gcGF0aDtcbiAgICB0aGlzLnBsdWdpbiA9IHBsdWdpbjtcbiAgfVxuXG4gIG9uT3BlbigpIHtcbiAgICBjb25zdCB7IGNvbnRlbnRFbCB9ID0gdGhpcztcblxuICAgIGNvbnRlbnRFbC5jcmVhdGVFbChcImgyXCIsIHsgdGV4dDogYFNldCBjb2xvciBmb3IgJHt0aGlzLnBhdGh9YCB9KTtcblxuICAgIGNvbnN0IGZvcm0gPSBjb250ZW50RWwuY3JlYXRlRWwoXCJmb3JtXCIpO1xuXG4gICAgLy8gQ3JlYXRlIGlucHV0IGZpZWxkXG4gICAgY29uc3QgaW5wdXRDb250YWluZXIgPSBmb3JtLmNyZWF0ZUVsKFwiZGl2XCIpO1xuICAgIGlucHV0Q29udGFpbmVyLmNyZWF0ZUVsKFwibGFiZWxcIiwgeyB0ZXh0OiBcIkVudGVyIHRleHQ6XCIgfSk7XG4gICAgY29uc3QgaW5wdXQgPSBpbnB1dENvbnRhaW5lci5jcmVhdGVFbChcImlucHV0XCIsIHtcbiAgICAgIHR5cGU6IFwidGV4dFwiLFxuICAgICAgcGxhY2Vob2xkZXI6IFwiQ29sb3IgKGUuZy4sICNmZjAwMDAgb3IgcmVkLCBvciB2YXIoLS1taW50KSlcIixcbiAgICB9KSBhcyBIVE1MSW5wdXRFbGVtZW50O1xuXG4gICAgLy8gQ3JlYXRlIGJ1dHRvbiBjb250YWluZXJcbiAgICBjb25zdCBidXR0b25Db250YWluZXIgPSBmb3JtLmNyZWF0ZUVsKFwiZGl2XCIsIHtcbiAgICAgIGNsczogXCJtb2RhbC1idXR0b24tY29udGFpbmVyXCIsXG4gICAgfSk7XG4gICAgYnV0dG9uQ29udGFpbmVyLnN0eWxlLm1hcmdpblRvcCA9IFwiMjBweFwiO1xuICAgIGJ1dHRvbkNvbnRhaW5lci5zdHlsZS5kaXNwbGF5ID0gXCJmbGV4XCI7XG4gICAgYnV0dG9uQ29udGFpbmVyLnN0eWxlLmdhcCA9IFwiMTBweFwiO1xuICAgIGJ1dHRvbkNvbnRhaW5lci5zdHlsZS5qdXN0aWZ5Q29udGVudCA9IFwiZmxleC1lbmRcIjtcblxuICAgIC8vIFN1Ym1pdCBidXR0b25cbiAgICBsZXQgc3VibWl0ID0gKGU6IGFueSkgPT4ge1xuICAgICAgZS5wcmV2ZW50RGVmYXVsdCgpO1xuICAgICAgaWYgKGlucHV0LnZhbHVlLnRyaW0oKSA9PT0gXCJcIikge1xuICAgICAgICBkZWxldGUgdGhpcy5wbHVnaW4uc2V0dGluZ3MucGF0aHNbdGhpcy5wYXRoXTtcbiAgICAgIH0gZWxzZSB7XG4gICAgICAgIHRoaXMucGx1Z2luLnNldHRpbmdzLnBhdGhzW3RoaXMucGF0aF0gPSBpbnB1dC52YWx1ZTtcbiAgICAgIH1cbiAgICAgIHRoaXMucGx1Z2luLnNhdmVTZXR0aW5ncygpO1xuICAgICAgdGhpcy5wbHVnaW4uYXBwbHlTdHlsZXMoKTtcbiAgICAgIHRoaXMuY2xvc2UoKTtcbiAgICB9O1xuICAgIGZvcm0uYWRkRXZlbnRMaXN0ZW5lcihcInN1Ym1pdFwiLCBzdWJtaXQpO1xuICAgIGNvbnN0IHN1Ym1pdEJ0biA9IGJ1dHRvbkNvbnRhaW5lci5jcmVhdGVFbChcImJ1dHRvblwiLCB7IHRleHQ6IFwiU3VibWl0XCIgfSk7XG4gICAgc3VibWl0QnRuLnR5cGUgPSBcImJ1dHRvblwiO1xuICAgIHN1Ym1pdEJ0bi5hZGRFdmVudExpc3RlbmVyKFwiY2xpY2tcIiwgc3VibWl0KTtcblxuICAgIC8vIENhbmNlbCBidXR0b25cbiAgICBjb25zdCBjYW5jZWxCdG4gPSBidXR0b25Db250YWluZXIuY3JlYXRlRWwoXCJidXR0b25cIiwgeyB0ZXh0OiBcIkNhbmNlbFwiIH0pO1xuICAgIGNhbmNlbEJ0bi50eXBlID0gXCJidXR0b25cIjtcbiAgICBjYW5jZWxCdG4uYWRkRXZlbnRMaXN0ZW5lcihcImNsaWNrXCIsICgpID0+IHtcbiAgICAgIHRoaXMuY2xvc2UoKTtcbiAgICB9KTtcblxuICAgIC8vIEZvY3VzIGlucHV0IG9uIG9wZW5cbiAgICBpbnB1dC5mb2N1cygpO1xuICB9XG5cbiAgb25DbG9zZSgpIHtcbiAgICBjb25zdCB7IGNvbnRlbnRFbCB9ID0gdGhpcztcbiAgICBjb250ZW50RWwuZW1wdHkoKTtcbiAgfVxufVxuIl0sCiAgIm1hcHBpbmdzIjogIjs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7Ozs7O0FBQUE7QUFBQTtBQUFBO0FBQUE7QUFBQTtBQUFBLElBQUFBLG1CQUF5Qzs7O0FDQXpDLHNCQUEyQztBQU9wQyxJQUFNLG1CQUFxQztBQUFBLEVBQ2hELE9BQU8sQ0FBQztBQUNWO0FBRU8sSUFBTSxtQkFBTixjQUErQixpQ0FBaUI7QUFBQSxFQUdyRCxZQUFZLFFBQTJCO0FBQ3JDLFVBQU0sT0FBTyxLQUFLLE1BQU07QUFDeEIsU0FBSyxTQUFTO0FBQUEsRUFDaEI7QUFBQSxFQUVBLFVBQWdCO0FBQ2QsVUFBTSxFQUFFLFlBQVksSUFBSTtBQUN4QixnQkFBWSxNQUFNO0FBRWxCLGVBQVcsT0FBTyxLQUFLLE9BQU8sU0FBUyxPQUFPO0FBQzVDLFVBQUksUUFBUSxLQUFLLE9BQU8sU0FBUyxNQUFNLEdBQUc7QUFDMUMsVUFBSSx3QkFBUSxXQUFXLEVBQ3BCLFFBQVEsR0FBRyxFQUNYLFFBQVEsK0JBQStCLEVBQ3ZDO0FBQUEsUUFBUSxDQUFDLFNBQ1IsS0FDRyxlQUFlLGFBQWEsRUFDNUIsU0FBUyxLQUFLLEVBQ2QsU0FBUyxPQUFPLGFBQWE7QUFDNUIsZUFBSyxPQUFPLFNBQVMsTUFBTSxHQUFHLElBQUk7QUFDbEMsZ0JBQU0sS0FBSyxPQUFPLGFBQWE7QUFBQSxRQUNqQyxDQUFDO0FBQUEsTUFDTCxFQUNDO0FBQUEsUUFBVSxDQUFDLE1BQ1YsRUFBRSxRQUFRLE9BQU8sRUFBRSxRQUFRLFlBQVk7QUFDckMsaUJBQU8sS0FBSyxPQUFPLFNBQVMsTUFBTSxHQUFHO0FBQ3JDLGdCQUFNLEtBQUssT0FBTyxhQUFhO0FBQy9CLGVBQUssUUFBUTtBQUFBLFFBQ2YsQ0FBQztBQUFBLE1BQ0g7QUFBQSxJQUNKO0FBR0EsUUFBSSxXQUFXO0FBQ2YsUUFBSSx3QkFBUSxXQUFXLEVBQ3BCLFFBQVEsY0FB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QUFBQTtBQUFBO0FBQUE7QUFBQTtBQWlDakIsSUFBcUIsb0JBQXJCLGNBQStDLHdCQUFPO0FBQUEsRUFFcEQsTUFBTSxTQUFTO0FBQ2IsVUFBTSxLQUFLLGFBQWE7QUFDeEIsU0FBSyxjQUFjLElBQUksaUJBQWlCLElBQUksQ0FBQztBQUM3QyxTQUFLLFlBQVk7QUFFakIsU0FBSztBQUFBLE1BQ0gsS0FBSyxJQUFJLFVBQVUsR0FBRyxhQUFhLENBQUMsTUFBTSxTQUFTO0FBRWpELGFBQUssUUFBUSxDQUFDLFNBQVM7QUFDckIsZUFDRyxTQUFTLFdBQVcsRUFDcEIsUUFBUSxTQUFTLEVBQ2pCLFFBQVEsWUFBWTtBQUNuQixrQkFBTSxRQUFRLElBQUksWUFBWSxNQUFNLEtBQUssSUFBSTtBQUM3QyxrQkFBTSxLQUFLO0FBQUEsVUFDYixDQUFDO0FBQUEsUUFDTCxDQUFDO0FBQUEsTUFDSCxDQUFDO0FBQUEsSUFDSDtBQUFBLEVBQ0Y7QUFBQSxFQUNBLDJCQUEyQjtBQUN6QixTQUFLLGFBQWEsRUFBRSxLQUFLLE1BQU0sS0FBSyxZQUFZLENBQUM7QUFBQSxFQUNuRDtBQUFBLEVBQ0EsV0FBVztBQTlEYjtBQStESSxtQkFBUyxlQUFlLGNBQWMsTUFBdEMsbUJBQXlDO0FBQUEsRUFDM0M7QUFBQSxFQUVBLGNBQWM7QUFsRWhCO0FBbUVJLFVBQU0sUUFBUSxTQUFTLGNBQWMsT0FBTztBQUM1QyxtQkFBUyxlQUFlLGNBQWMsTUFBdEMsbUJBQXlDO0FBQ3pDLFVBQU0sS0FBSztBQUVYLGVBQVcsQ0FBQyxNQUFNLEtBQUssS0FBSyxPQUFPLFFBQVEsS0FBSyxTQUFTLEtBQUssRUFBRTtBQUFBLE1BQzlELENBQUMsR0FBRyxNQUFNLEVBQUUsQ0FBQyxFQUFFLFNBQVMsRUFBRSxDQUFDLEVBQUU7QUFBQSxJQUMvQixHQUFHO0FBQ0QsWUFBTSxhQUFhLFNBQ2hCLFFBQVEsa0JBQWtCLEtBQUssRUFDL0IsUUFBUSxnQkFBZ0IsSUFBSTtBQUFBLElBQ2pDO0FBQ0EsYUFBUyxLQUFLLFlBQVksS0FBSztBQUMvQixTQUFLO0FBQUEsTUFDSCxLQUFLLElBQUksVUFBVSxHQUFHLHNCQUFzQixDQUFDLFNBQVM7QUFoRjVELFlBQUFDO0FBaUZRLGFBQUksNkJBQU0saUJBQWdCLDJCQUFVO0FBQ2xDLGVBQUssS0FBSyxVQUFVLFFBQVEsUUFBT0EsTUFBQSxLQUFLLEtBQUssU0FBVixnQkFBQUEsSUFBZ0I7QUFBQSxRQUNyRDtBQUFBLE1BQ0YsQ0FBQztBQUFBLElBQ0g7QUFBQSxFQUNGO0FBQUEsRUFFQSxNQUFNLGVBQWU7QUFDbkIsUUFBSSxVQUFXLE1BQU0sS0FBSyxTQUFTO0FBQ25DLFNBQUssV0FBVyxPQUFPLE9BQU8sQ0FBQyxHQUFHLGtCQUFrQixPQUFPO0FBQUEsRUFFN0Q7QUFBQSxFQUVBLE1BQU0sZUFBZTtBQUNuQixVQUFNLEtBQUssU0FBUyxLQUFLLFFBQVE7QUFBQSxFQUNuQztBQUNGOyIsCiAgIm5hbWVzIjogWyJpbXBvcnRfb2JzaWRpYW4iLCAiaW1wb3J0X29ic2lkaWFuIiwgIl9hIl0KfQo=
