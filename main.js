@@ -321,7 +321,7 @@ var SampleSettingTab = class extends import_obsidian.PluginSettingTab {
     new import_obsidian.Setting(containerEl)
       .setName("Paths")
       .setDesc(
-        "Assign theme colors to files and folders. Items are grouped and indented by folder hierarchy.",
+        "Assign theme colors to files and folders. Append /* (e.g. Folder/*) to apply a color to a folder and all its children.",
       )
       .setHeading();
 
@@ -539,7 +539,7 @@ var SampleModal = class extends import_obsidian2.Modal {
 
 // src/main.ts
 var template = `
-.tree-item-self[data-path^="#{$path}"] {
+#{$treeSelector} {
   color: #{$color};
   --nav-item-color-hover: color-mix(
     in srgb,
@@ -560,7 +560,7 @@ var template = `
     color: color-mix(in srgb, #{$color} 70%, transparent);
   }
 }
-.view-content[data-path^="#{$path}"] {
+#{$viewSelector} {
   --h1-color: #{$color};
   --h2-color: #{$color};
   --h3-color: #{$color};
@@ -618,11 +618,38 @@ var AlexShermanPlugin = class extends import_obsidian3.Plugin {
         .join("\n");
       css += `:root, body {\n${vars}\n}\n`;
     }
-    for (const [path, color] of Object.entries(this.settings.paths || {}).sort(
-      (a, b) => a[0].length - b[0].length,
-    )) {
+    const sortedEntries = Object.entries(this.settings.paths || {}).sort((a, b) => {
+      const aWild = a[0].endsWith("/*");
+      const bWild = b[0].endsWith("/*");
+      const aBase = aWild ? a[0].slice(0, -2) : a[0];
+      const bBase = bWild ? b[0].slice(0, -2) : b[0];
+      if (aBase.length !== bBase.length) {
+        return aBase.length - bBase.length;
+      }
+      if (aWild !== bWild) {
+        return aWild ? -1 : 1;
+      }
+      return a[0].length - b[0].length;
+    });
+    for (const [path, color] of sortedEntries) {
       if (!color) continue;
-      css += template.replace(/\#\{\$color\}/g, color).replace(/\#{\$path\}/g, path);
+      let treeSelector;
+      let viewSelector;
+      if (path === "*") {
+        treeSelector = ".tree-item-self[data-path]";
+        viewSelector = ".view-content[data-path]";
+      } else if (path.endsWith("/*")) {
+        const basePath = path.slice(0, -2);
+        treeSelector = `.tree-item-self[data-path="${basePath}"], .tree-item-self[data-path^="${basePath}/"]`;
+        viewSelector = `.view-content[data-path="${basePath}"], .view-content[data-path^="${basePath}/"]`;
+      } else {
+        treeSelector = `.tree-item-self[data-path="${path}"]`;
+        viewSelector = `.view-content[data-path="${path}"]`;
+      }
+      css += template
+        .replace(/\#\{\$color\}/g, color)
+        .replace(/\#\{\$treeSelector\}/g, treeSelector)
+        .replace(/\#\{\$viewSelector\}/g, viewSelector);
     }
     style.innerHTML = css;
     document.body.appendChild(style);
